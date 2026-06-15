@@ -90,8 +90,8 @@ export default function HomePage() {
           {/* 조사 목적 */}
           <div>
             <div className="text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wider">조사 목적</div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {(Object.keys(PURPOSE_LABELS) as ResearchPurpose[]).map((p) => {
+            <div className="grid grid-cols-2 gap-2">
+              {(["investment", "sourcing"] as ResearchPurpose[]).map((p) => {
                 const Icon = PURPOSE_ICONS[p];
                 const meta = PURPOSE_LABELS[p];
                 const active = purpose === p;
@@ -136,24 +136,9 @@ export default function HomePage() {
               <span className={`pill ${health.naver_key ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
                 {health.naver_key ? "✓" : "✗"} 네이버
               </span>
-              <span className="text-slate-500">자동수집 ·  나머지는 1클릭 외부 링크</span>
             </div>
           )}
         </form>
-
-        {/* 안내 */}
-        <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs text-slate-600">
-          {[
-            { t: "공공 데이터 우선", d: "DART · 네이버 · 공정위 · 중기부 등 무료 공개 데이터만 사용" },
-            { t: "목적별 최적화", d: "투자/제휴/M&A/소싱에 따라 우선 노출 데이터 자동 조정" },
-            { t: "1클릭 외부 검색", d: "혁신의숲 · THE VC · 사람인 등 14개 사이트 일괄 오픈" },
-          ].map((x) => (
-            <div key={x.t} className="card p-4">
-              <div className="font-semibold text-slate-900 mb-1">{x.t}</div>
-              <div className="text-slate-500 leading-relaxed">{x.d}</div>
-            </div>
-          ))}
-        </div>
       </main>
     </div>
   );

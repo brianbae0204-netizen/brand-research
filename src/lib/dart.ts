@@ -39,7 +39,8 @@ export async function loadCorpCodes(force = false): Promise<DartCorp[]> {
   if (!xmlFile) throw new Error("CORPCODE.xml 파일을 찾지 못했습니다.");
   const xml = await xmlFile.async("string");
 
-  const parser = new XMLParser({ ignoreAttributes: true });
+  // parseTagValue:false — corp_code/stock_code의 앞자리 0이 숫자 변환으로 사라지는 것 방지
+  const parser = new XMLParser({ ignoreAttributes: true, parseTagValue: false });
   const parsed = parser.parse(xml);
   const list = parsed?.result?.list ?? [];
 
@@ -94,6 +95,10 @@ const KEY_ACCOUNTS: Record<string, string[]> = {
   부채총계: ["부채총계"],
   자본총계: ["자본총계"],
   현금성자산: ["현금및현금성자산"],
+  재고자산: ["재고자산"],
+  매출채권: ["매출채권", "매출채권및기타채권", "매출채권및기타유동채권", "매출채권및기타유동자산"],
+  단기차입금: ["단기차입금"],
+  장기차입금: ["장기차입금"],
   영업활동현금흐름: ["영업활동 현금흐름", "영업활동으로 인한 현금흐름"],
   투자활동현금흐름: ["투자활동 현금흐름", "투자활동으로 인한 현금흐름"],
   재무활동현금흐름: ["재무활동 현금흐름", "재무활동으로 인한 현금흐름"],

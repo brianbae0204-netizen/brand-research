@@ -3,15 +3,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import {
-  ArrowLeft, Building2, Calendar, User, Phone, Globe, MapPin,
-  AlertTriangle, ExternalLink, FileText, Loader2, BarChart3, Newspaper,
-  ShoppingBag, PenLine, Database, Sparkles,
+  ArrowLeft, Building2, AlertTriangle, FileText, Loader2,
+  BarChart3, Newspaper, ShoppingBag, PenLine, Sparkles, Database, ExternalLink, ClipboardList,
 } from "lucide-react";
-import type { SearchResult, FinancialSummaryRow, DartCompanyInfo, DartCorp, ResearchPurpose } from "@/lib/types";
+import type {
+  SearchResult, FinancialSummaryRow, DartCorp, ResearchPurpose,
+  CompanyOverview, NewsItem, ShoppingItem, FinancialAnalysis,
+} from "@/lib/types";
 import { PURPOSE_LABELS } from "@/lib/types";
 import { StatCard } from "@/components/StatCard";
 import { FinancialTable } from "@/components/FinancialTable";
+import { FinancialChart } from "@/components/FinancialChart";
 import { DataSourceCard } from "@/components/DataSourceCard";
+import { CompanyOverviewCard } from "@/components/CompanyOverview";
 
 function fmtKR(v: number | null | undefined) {
   if (v === null || v === undefined) return "-";
@@ -27,6 +31,12 @@ function fmtPct(curr: number | null, prev: number | null) {
   return ((curr - prev) / Math.abs(prev)) * 100;
 }
 
+/** 브랜드 기준 검색 표기 */
+function BrandTag({ brand }: { brand: string | null }) {
+  if (!brand) return null;
+  return <span className="pill bg-pink-50 text-pink-600 text-[11px]">브랜드 ‘{brand}’ 기준</span>;
+}
+
 export default function DashboardClient() {
   const params = useSearchParams();
   const router = useRouter();
@@ -36,11 +46,16 @@ export default function DashboardClient() {
   const [data, setData] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedCorp, setSelectedCorp] = useState<DartCorp | null>(null);
-  const [companyInfo, setCompanyInfo] = useState<DartCompanyInfo | null>(null);
   const [financials, setFinancials] = useState<FinancialSummaryRow[]>([]);
+  const [overview, setOverview] = useState<CompanyOverview | null>(null);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [blog, setBlog] = useState<NewsItem[]>([]);
+  const [shopping, setShopping] = useState<ShoppingItem[]>([]);
+  const [brand, setBrand] = useState<string | null>(null);
+  const [finAnalysis, setFinAnalysis] = useState<FinancialAnalysis | null>(null);
   const [finLoading, setFinLoading] = useState(false);
 
-  // 초기 검색
+  // 초기 검색 (DART 후보)
   useEffect(() => {
     if (!query) return;
     setLoading(true);
@@ -48,32 +63,32 @@ export default function DashboardClient() {
       .then((r) => r.json())
       .then((d: SearchResult) => {
         setData(d);
-        // DART 첫 후보 자동 선택
-        if (d.dart_candidates?.length > 0) {
-          setSelectedCorp(d.dart_candidates[0]);
-        }
+        if (d.dart_candidates?.length > 0) setSelectedCorp(d.dart_candidates[0]);
       })
       .finally(() => setLoading(false));
   }, [query, purpose]);
 
-  // 회사 선택 시 재무 조회
+  // 개요 통합 조회 (브랜드 기준 뉴스/쇼핑/블로그 + 재무 + AI)
   useEffect(() => {
-    if (!selectedCorp) {
-      setCompanyInfo(null);
-      setFinancials([]);
-      return;
-    }
+    if (!query || !data) return;
+    // 후보가 있는데 아직 미선택이면 자동선택 후 재실행되므로 대기
+    if (data.dart_candidates.length > 0 && !selectedCorp) return;
+    const cc = selectedCorp?.corp_code || "";
     setFinLoading(true);
-    fetch(`/api/dart/financials?corp_code=${selectedCorp.corp_code}`)
+    fetch(`/api/overview?corp_code=${cc}&q=${encodeURIComponent(query)}`)
       .then((r) => r.json())
       .then((d) => {
-        setCompanyInfo(d.info || null);
+        setOverview(d.overview || null);
         setFinancials(d.summary || []);
+        setNews(d.news || []);
+        setBlog(d.blog || []);
+        setShopping(d.shopping || []);
+        setBrand(d.brand || null);
+        setFinAnalysis(d.financialAnalysis || null);
       })
       .finally(() => setFinLoading(false));
-  }, [selectedCorp]);
+  }, [query, selectedCorp, data]);
 
-  // KPI 계산
   const kpi = useMemo(() => {
     if (!financials || financials.length === 0) return null;
     const sorted = [...financials].sort((a, b) => a.year - b.year);
@@ -84,10 +99,7 @@ export default function DashboardClient() {
     const ni = latest?.values["당기순이익"] ?? null;
     const ocf = latest?.values["영업활동현금흐름"] ?? null;
     return {
-      rev,
-      op,
-      ni,
-      ocf,
+      rev, op, ni, ocf,
       revGrowth: prev ? fmtPct(rev, prev.values["매출액"]) : null,
       opGrowth: prev ? fmtPct(op, prev.values["영업이익"]) : null,
       year: latest.year,
@@ -95,7 +107,7 @@ export default function DashboardClient() {
     };
   }, [financials]);
 
-  const purposeMeta = PURPOSE_LABELS[purpose];
+  const purposeMeta = PURPOSE_LABELS[purpose] ?? PURPOSE_LABELS.investment;
 
   if (loading) {
     return (
@@ -103,7 +115,7 @@ export default function DashboardClient() {
         <div className="text-center">
           <Loader2 className="w-10 h-10 text-brand-500 animate-spin mx-auto mb-3" />
           <div className="text-sm text-slate-600">데이터 수집 중...</div>
-          <div className="text-xs text-slate-400 mt-1">DART · 네이버 뉴스/쇼핑/블로그</div>
+          <div className="text-xs text-slate-400 mt-1">DART · 네이버 · 공공데이터</div>
         </div>
       </div>
     );
@@ -115,10 +127,7 @@ export default function DashboardClient() {
       {/* Top Nav */}
       <header className="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-3">
-          <button
-            onClick={() => router.push("/")}
-            className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 font-medium"
-          >
+          <button onClick={() => router.push("/")} className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 font-medium">
             <ArrowLeft className="w-4 h-4" />
             <span className="hidden sm:inline">새 검색</span>
           </button>
@@ -130,12 +139,17 @@ export default function DashboardClient() {
               <span>{new Date(data.timestamp).toLocaleString("ko-KR")}</span>
             </div>
           </div>
-          <button
-            onClick={() => window.print()}
-            className="btn-ghost text-xs sm:text-sm"
-          >
-            🖨️ <span className="hidden sm:inline">인쇄</span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => router.push(`/screening?q=${encodeURIComponent(query)}&purpose=${purpose}${selectedCorp ? `&corp_code=${selectedCorp.corp_code}` : ""}`)}
+              className="btn-primary text-xs sm:text-sm inline-flex items-center gap-1 py-1.5"
+            >
+              <ClipboardList className="w-4 h-4" /><span className="hidden sm:inline">투자 스크리닝</span>
+            </button>
+            <button onClick={() => window.print()} className="btn-ghost text-xs sm:text-sm">
+              🖨️ <span className="hidden sm:inline">인쇄</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -164,31 +178,14 @@ export default function DashboardClient() {
           </section>
         )}
 
-        {/* 회사 헤더 */}
-        {companyInfo && (
-          <section className="card p-5 sm:p-6 bg-gradient-to-br from-white to-slate-50">
-            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
-              <div className="flex-1">
-                <div className="flex items-center gap-2 mb-1">
-                  <Sparkles className="w-4 h-4 text-brand-500" />
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-brand-600">DART 회사 개황</span>
-                </div>
-                <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900">{companyInfo.corp_name}</h1>
-                {companyInfo.corp_name_eng && (
-                  <div className="text-sm text-slate-500 mt-0.5">{companyInfo.corp_name_eng}</div>
-                )}
-                <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-xs sm:text-sm">
-                  <InfoItem icon={<User />} label="대표자" value={companyInfo.ceo_nm} />
-                  <InfoItem icon={<Calendar />} label="설립일" value={formatDate(companyInfo.est_dt)} />
-                  <InfoItem icon={<FileText />} label="종목코드" value={companyInfo.stock_code || "비상장"} />
-                  <InfoItem icon={<Calendar />} label="결산월" value={companyInfo.acc_mt ? `${companyInfo.acc_mt}월` : "-"} />
-                  <InfoItem icon={<Phone />} label="대표 전화" value={companyInfo.phn_no} />
-                  <InfoItem icon={<Globe />} label="홈페이지" value={companyInfo.hm_url} link />
-                  <InfoItem icon={<MapPin />} label="주소" value={companyInfo.adres} className="col-span-2" />
-                </div>
-              </div>
-            </div>
+        {/* 기업 개요 */}
+        {finLoading && !overview ? (
+          <section className="card p-10 text-center text-slate-500">
+            <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
+            기업 개요 수집 중... <span className="text-xs text-slate-400">(DART · 국민연금 · 뉴스 · AI)</span>
           </section>
+        ) : (
+          overview && <CompanyOverviewCard ov={overview} />
         )}
 
         {/* KPI */}
@@ -196,23 +193,11 @@ export default function DashboardClient() {
           <section>
             <h2 className="section-title mb-3"><BarChart3 className="w-4 h-4" /> 핵심 지표 ({kpi.year})</h2>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <StatCard
-                label="매출액"
-                value={fmtKR(kpi.rev)}
-                trend={kpi.revGrowth !== null ? {
-                  value: `${Math.abs(kpi.revGrowth).toFixed(1)}%`,
-                  direction: kpi.revGrowth >= 0 ? "up" : "down",
-                } : undefined}
-              />
-              <StatCard
-                label="영업이익"
-                value={fmtKR(kpi.op)}
+              <StatCard label="매출액" value={fmtKR(kpi.rev)}
+                trend={kpi.revGrowth !== null ? { value: `${Math.abs(kpi.revGrowth).toFixed(1)}%`, direction: kpi.revGrowth >= 0 ? "up" : "down" } : undefined} />
+              <StatCard label="영업이익" value={fmtKR(kpi.op)}
                 subValue={kpi.opMargin !== null ? `OPM ${kpi.opMargin.toFixed(1)}%` : undefined}
-                trend={kpi.opGrowth !== null ? {
-                  value: `${Math.abs(kpi.opGrowth).toFixed(1)}%`,
-                  direction: kpi.opGrowth >= 0 ? "up" : "down",
-                } : undefined}
-              />
+                trend={kpi.opGrowth !== null ? { value: `${Math.abs(kpi.opGrowth).toFixed(1)}%`, direction: kpi.opGrowth >= 0 ? "up" : "down" } : undefined} />
               <StatCard label="당기순이익" value={fmtKR(kpi.ni)} />
               <StatCard label="영업활동 현금흐름" value={fmtKR(kpi.ocf)} />
             </div>
@@ -225,6 +210,20 @@ export default function DashboardClient() {
             <h2 className="section-title mb-3"><FileText className="w-4 h-4" /> 3개년 재무제표</h2>
             {finLoading ? (
               <div className="card p-10 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />조회 중...</div>
+            ) : financials.length > 0 ? (
+              <div className="space-y-4">
+                {finAnalysis && (
+                  <div className="card p-4 bg-indigo-50/50 border-indigo-200">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-900 mb-1.5">
+                      <Sparkles className="w-3.5 h-3.5" /> AI 재무 분석
+                      <span className="pill bg-amber-100 text-amber-700 text-[10px]">추정·검증필요</span>
+                    </div>
+                    <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-line">{finAnalysis.text}</p>
+                  </div>
+                )}
+                <FinancialChart summary={financials} />
+                <FinancialTable summary={financials} />
+              </div>
             ) : (
               <FinancialTable summary={financials} />
             )}
@@ -232,11 +231,11 @@ export default function DashboardClient() {
         )}
 
         {/* 뉴스 */}
-        {data.naver_news.length > 0 && (
+        {news.length > 0 && (
           <section>
-            <h2 className="section-title mb-3"><Newspaper className="w-4 h-4" /> 최근 뉴스 <span className="pill bg-slate-100 text-slate-600">네이버</span></h2>
+            <h2 className="section-title mb-3 flex-wrap gap-2"><Newspaper className="w-4 h-4" /> 최근 뉴스 <BrandTag brand={brand} /></h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {data.naver_news.slice(0, 8).map((n, i) => (
+              {news.map((n, i) => (
                 <a key={i} href={n.url} target="_blank" rel="noopener" className="card card-hover p-4 block">
                   <div className="text-sm font-semibold text-slate-900 mb-1.5 line-clamp-2">{n.title}</div>
                   <div className="text-[11px] text-slate-500 mb-1.5">{n.date && new Date(n.date).toLocaleDateString("ko-KR")}</div>
@@ -248,11 +247,11 @@ export default function DashboardClient() {
         )}
 
         {/* 쇼핑 */}
-        {data.naver_shopping.length > 0 && (
+        {shopping.length > 0 && (
           <section>
-            <h2 className="section-title mb-3"><ShoppingBag className="w-4 h-4" /> 국내 e커머스 노출 <span className="pill bg-slate-100 text-slate-600">네이버 쇼핑</span></h2>
+            <h2 className="section-title mb-3 flex-wrap gap-2"><ShoppingBag className="w-4 h-4" /> 국내 e커머스 노출 <BrandTag brand={brand} /></h2>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-              {data.naver_shopping.slice(0, 12).map((p, i) => (
+              {shopping.slice(0, 12).map((p, i) => (
                 <a key={i} href={p.url} target="_blank" rel="noopener" className="card card-hover overflow-hidden block">
                   <div className="aspect-square bg-slate-100 overflow-hidden">
                     {p.image && <img src={p.image} alt="" className="w-full h-full object-cover" />}
@@ -269,11 +268,11 @@ export default function DashboardClient() {
         )}
 
         {/* 블로그 */}
-        {data.naver_blog.length > 0 && (
+        {blog.length > 0 && (
           <section>
-            <h2 className="section-title mb-3"><PenLine className="w-4 h-4" /> 고객평 · 인플루언서 <span className="pill bg-slate-100 text-slate-600">네이버 블로그</span></h2>
+            <h2 className="section-title mb-3 flex-wrap gap-2"><PenLine className="w-4 h-4" /> 고객평 · 인플루언서 <BrandTag brand={brand} /></h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {data.naver_blog.slice(0, 6).map((b, i) => (
+              {blog.map((b, i) => (
                 <a key={i} href={b.url} target="_blank" rel="noopener" className="card card-hover p-4 block">
                   <div className="text-sm font-semibold text-slate-900 mb-1.5 line-clamp-2">{b.title}</div>
                   <div className="text-[11px] text-slate-500 mb-1.5">{b.blogger} · {b.date}</div>
@@ -285,28 +284,32 @@ export default function DashboardClient() {
         )}
 
         {/* 자동 수집 데이터 소스 카드 */}
-        <section>
-          <h2 className="section-title mb-3"><Database className="w-4 h-4" /> 자동 수집 데이터 소스</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-            {data.data_sources.auto.map((s) => <DataSourceCard key={s.id} source={s} />)}
-          </div>
-        </section>
+        {data.data_sources.auto.length > 0 && (
+          <section>
+            <h2 className="section-title mb-3"><Database className="w-4 h-4" /> 자동 수집 데이터 소스</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {data.data_sources.auto.map((s) => <DataSourceCard key={s.id} source={s} />)}
+            </div>
+          </section>
+        )}
 
         {/* 외부 확인 (1클릭) */}
-        <section>
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <h2 className="section-title"><ExternalLink className="w-4 h-4" /> 외부 확인 필요 <span className="text-xs font-normal text-slate-500">({purposeMeta.label} 기준 정렬)</span></h2>
-            <button
-              onClick={openAllExternal(data.data_sources.external.map((s) => s.url || ""))}
-              className="btn-ghost text-xs"
-            >
-              ⚡ 전체 새 탭 열기
-            </button>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-            {data.data_sources.external.map((s) => <DataSourceCard key={s.id} source={s} />)}
-          </div>
-        </section>
+        {data.data_sources.external.length > 0 && (
+          <section>
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+              <h2 className="section-title"><ExternalLink className="w-4 h-4" /> 외부 확인 필요 <span className="text-xs font-normal text-slate-500">({purposeMeta.label} 기준 정렬)</span></h2>
+              <button
+                onClick={openAllExternal(data.data_sources.external.map((s) => s.url || ""))}
+                className="btn-ghost text-xs"
+              >
+                ⚡ 전체 새 탭 열기
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+              {data.data_sources.external.map((s) => <DataSourceCard key={s.id} source={s} />)}
+            </div>
+          </section>
+        )}
 
         {/* 경고 */}
         {data.warnings.length > 0 && (
@@ -324,37 +327,11 @@ export default function DashboardClient() {
         )}
 
         <footer className="text-center text-xs text-slate-400 py-6">
-          공공·무료 데이터 기반 · CJ ENM 성장추진팀 · 비공개 재무·쿠팡 실시간 순위 등은 외부 링크로 보완
+          공공·무료 데이터(DART·국민연금·네이버) + AI 요약 기반 · CJ ENM 성장추진팀 · 수치·요약은 검증 필요
         </footer>
       </main>
     </div>
   );
-}
-
-function InfoItem({ icon, label, value, link, className }: {
-  icon: React.ReactNode; label: string; value?: string; link?: boolean; className?: string;
-}) {
-  if (!value || value === "-") return (
-    <div className={className}>
-      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">{label}</div>
-      <div className="text-slate-400">-</div>
-    </div>
-  );
-  return (
-    <div className={className}>
-      <div className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold flex items-center gap-1">
-        <span className="w-3 h-3">{icon}</span>{label}
-      </div>
-      <div className="text-slate-800 font-medium break-all">
-        {link ? <a href={value.startsWith("http") ? value : `http://${value}`} target="_blank" rel="noopener" className="text-brand-600 hover:underline">{value}</a> : value}
-      </div>
-    </div>
-  );
-}
-
-function formatDate(d?: string) {
-  if (!d || d.length < 8) return "-";
-  return `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
 }
 
 function openAllExternal(urls: string[]) {

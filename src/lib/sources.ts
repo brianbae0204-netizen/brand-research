@@ -200,16 +200,6 @@ export function buildSources(query: string, purpose: ResearchPurpose): Record<st
       url: `https://www.amazon.com/s?k=${q}`,
       priority: purpose === "investment" || purpose === "jbp" ? 2 : 4,
     },
-    {
-      id: "sephora",
-      title: "Sephora",
-      emoji: "💄",
-      category: "external",
-      description: "글로벌 럭셔리/K뷰티 진출 — Sephora US/EU",
-      checklist: ["Sephora 입점 여부", "별점 · 리뷰", "Sephora Collection 협업"],
-      url: `https://www.sephora.com/search?keyword=${q}`,
-      priority: purpose === "jbp" ? 2 : 4,
-    },
   ];
 
   // 목적별 가중치 정렬
