@@ -42,6 +42,7 @@ export default function DashboardClient() {
   const router = useRouter();
   const query = params.get("q") || "";
   const purpose = (params.get("purpose") || "investment") as ResearchPurpose;
+  const userBrands = params.get("brands") || "";
 
   const [data, setData] = useState<SearchResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,7 +60,7 @@ export default function DashboardClient() {
   useEffect(() => {
     if (!query) return;
     setLoading(true);
-    fetch(`/api/search?q=${encodeURIComponent(query)}&purpose=${purpose}`)
+    fetch(`/api/search?q=${encodeURIComponent(query)}&purpose=${purpose}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d: SearchResult) => {
         setData(d);
@@ -75,7 +76,8 @@ export default function DashboardClient() {
     if (data.dart_candidates.length > 0 && !selectedCorp) return;
     const cc = selectedCorp?.corp_code || "";
     setFinLoading(true);
-    fetch(`/api/overview?corp_code=${cc}&q=${encodeURIComponent(query)}`)
+    const brandsParam = userBrands ? `&brands=${encodeURIComponent(userBrands)}` : "";
+    fetch(`/api/overview?corp_code=${cc}&q=${encodeURIComponent(query)}${brandsParam}&_=${Date.now()}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         setOverview(d.overview || null);
@@ -87,7 +89,7 @@ export default function DashboardClient() {
         setFinAnalysis(d.financialAnalysis || null);
       })
       .finally(() => setFinLoading(false));
-  }, [query, selectedCorp, data]);
+  }, [query, selectedCorp, data, userBrands]);
 
   const kpi = useMemo(() => {
     if (!financials || financials.length === 0) return null;

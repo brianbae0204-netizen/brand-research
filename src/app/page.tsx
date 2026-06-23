@@ -18,6 +18,7 @@ const SUGGESTIONS = ["에이피알", "비나우", "메디큐브", "무신사", "
 export default function HomePage() {
   const router = useRouter();
   const [query, setQuery] = useState("");
+  const [brandsInput, setBrandsInput] = useState("");
   const [purpose, setPurpose] = useState<ResearchPurpose>("investment");
   const [health, setHealth] = useState<{ dart_key: boolean; naver_key: boolean } | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -30,7 +31,10 @@ export default function HomePage() {
     e?.preventDefault();
     if (!query.trim()) return;
     setSubmitting(true);
-    router.push(`/dashboard?q=${encodeURIComponent(query.trim())}&purpose=${purpose}`);
+    const brandsParam = brandsInput.trim()
+      ? `&brands=${encodeURIComponent(brandsInput.trim())}`
+      : "";
+    router.push(`/dashboard?q=${encodeURIComponent(query.trim())}&purpose=${purpose}${brandsParam}`);
   }
 
   return (
@@ -85,6 +89,23 @@ export default function HomePage() {
                 {s}
               </button>
             ))}
+          </div>
+
+          {/* 운영 브랜드 (선택) — 입력 시 AI 우회로 정확 검색 */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wider">
+              운영 브랜드 <span className="text-slate-400 normal-case">(선택 · 콤마로 구분)</span>
+            </label>
+            <input
+              type="text"
+              value={brandsInput}
+              onChange={(e) => setBrandsInput(e.target.value)}
+              placeholder="예: 메디큐브, 에이지알, 에이프릴스킨 (입력 시 AI 추정 대신 정확히 검색)"
+              className="w-full px-4 py-2.5 text-sm bg-slate-50 border-2 border-slate-200 rounded-xl focus:outline-none focus:border-brand-500 focus:bg-white transition"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">
+              💡 회사가 운영하는 자체 브랜드를 알고 있다면 직접 입력하세요. 비워두면 AI가 자동 추정합니다.
+            </p>
           </div>
 
           {/* 조사 목적 */}

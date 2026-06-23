@@ -8,11 +8,10 @@ import {
 import { getNews, getBlogs, getShopping, findHomepage } from "@/lib/naver";
 import { getEmploymentInfo } from "@/lib/publicdata";
 import { extractInvestment } from "@/lib/investment";
-import { research, extractBrand, keywordRelevantNews } from "@/lib/research";
+import { research, extractBrand } from "@/lib/research";
 import {
   isGeminiConfigured,
   geminiOverview,
-  geminiRelevantNews,
   geminiFinancialAnalysis,
 } from "@/lib/gemini";
 import type {
@@ -64,6 +63,11 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const corp_code = searchParams.get("corp_code") || "";
   const q = (searchParams.get("q") || "").trim();
+  // 사용자가 직접 입력한 운영 브랜드 (콤마 구분) — AI 추정보다 우선
+  const userBrandsRaw = (searchParams.get("brands") || "").trim();
+  const userBrands = userBrandsRaw
+    ? userBrandsRaw.split(/[,，]/).map((s) => s.trim()).filter(Boolean).slice(0, 6)
+    : [];
   if (!corp_code && !q) {
     return NextResponse.json({ error: "corp_code 또는 q 파라미터가 필요합니다." }, { status: 400 });
   }
@@ -72,46 +76,144 @@ export async function GET(req: Request) {
     const info = corp_code && isDartConfigured() ? await getCompanyInfo(corp_code) : null;
     const baseName = info?.corp_name || q;
 
-    // 1차: 법인명 기준 (브랜드 감지 + 법인 단위 수치/투자)
-    const [corpNews, corpBlog, summary, employmentNps] = await Promise.all([
-      getNews(baseName, 25).catch(() => [] as NewsItem[]),
-      getBlogs(baseName, 12).catch(() => [] as NewsItem[]),
+    // 1차: 법인명 기준 — 회사명만으로는 무관 기사(정치/사회 등)가 섞이므로
+    // "회사명 + 회사" 또는 "(주)회사명" 같은 modifier를 추가해 검색 정밀도 향상
+    const corpQuery = baseName.startsWith("(주)") || baseName.includes("주식회사")
+      ? baseName
+      : `${baseName} 회사`;
+    const [corpNewsRaw1, corpNewsRaw2, corpBlog, summary, employmentNps] = await Promise.all([
+      getNews(corpQuery, 15).catch(() => [] as NewsItem[]),
+      getNews(`(주)${baseName.replace(/^\(주\)/, "")}`, 10).catch(() => [] as NewsItem[]),
+      getBlogs(`${baseName} 회사`, 12).catch(() => [] as NewsItem[]),
       corp_code && isDartConfigured()
         ? getFinancials(corp_code).then(summarize).catch(() => [] as FinancialSummaryRow[])
         : Promise.resolve([] as FinancialSummaryRow[]),
       getEmploymentInfo(baseName).catch(() => null),
     ]);
-
-    // 운영 브랜드 감지 → 브랜드 기준으로 뉴스/쇼핑/블로그 재검색
-    const brand = extractBrand(baseName, corpNews, corpBlog);
-    const searchName = brand || baseName;
-    const useBrand = Boolean(brand && brand !== baseName);
-
-    const [brandNewsRaw, brandBlogRaw, shopping, homepageGuess] = await Promise.all([
-      useBrand ? getNews(searchName, 15).catch(() => corpNews) : Promise.resolve(corpNews),
-      useBrand ? getBlogs(searchName, 10).catch(() => corpBlog) : Promise.resolve(corpBlog),
-      getShopping(searchName, 12).catch(() => []),
-      findHomepage(searchName).catch(() => null),
-    ]);
-
-    // 뉴스 연관성 검증 (Gemini → 폴백 키워드)
-    let relevantNews: NewsItem[];
-    const gIdx = await geminiRelevantNews(baseName, brand, brandNewsRaw).catch(() => null);
-    if (gIdx && gIdx.length > 0) {
-      relevantNews = gIdx.map((i) => brandNewsRaw[i]).filter(Boolean);
-    } else {
-      const kw = keywordRelevantNews(baseName, brand, brandNewsRaw);
-      relevantNews = kw.length > 0 ? kw : brandNewsRaw;
+    // 두 쿼리 결과 합치고 중복 제거 (회사 단위 뉴스 풀)
+    const corpDedupe = new Map<string, NewsItem>();
+    for (const n of [...corpNewsRaw1, ...corpNewsRaw2]) {
+      const k = (n.url || "").split("?")[0];
+      if (k && !corpDedupe.has(k)) corpDedupe.set(k, n);
     }
-    const relevantBlog = (() => {
-      const kw = keywordRelevantNews(baseName, brand, brandBlogRaw);
-      return kw.length > 0 ? kw : brandBlogRaw;
-    })();
+    const corpNews = [...corpDedupe.values()].slice(0, 25);
 
-    // 기업개요: Gemini 작성+검수 → 폴백 발췌요약
+    // 운영 브랜드 감지 — 우선순위: 사용자 직접 입력 > Gemini AI 추정 > 휴리스틱
+    const heuristicBrand = extractBrand(baseName, corpNews, corpBlog);
+    const dartIdentifier = {
+      stock_code: info?.stock_code,
+      induty_code: info?.induty_code,
+      homepage: info?.hm_url,
+      ceo: info?.ceo_nm,
+      est_dt: info?.est_dt,
+    };
+    // 사용자 입력이 있으면 Gemini 호출 스킵 (quota 절약 + 정확성 보장)
+    const gOvEarly = userBrands.length > 0
+      ? null
+      : await geminiOverview(baseName, dartIdentifier, heuristicBrand, corpNews, corpBlog).catch(() => null);
+
+    /** Gemini brands가 비었을 때 — intro 본문에서 brand-like 고유명사만 엄격 추출
+     * 너무 헐거운 패턴은 정치·일반 단어까지 잡으므로 boundary 조건을 강화 */
+    const fallbackBrandsFromText = (corpName: string, intro: string): string[] => {
+      if (!intro) return [];
+      // brand-like 토큰: 영문 포함 OR 한글 3자 이상 OR 영문대문자+숫자
+      const tokenRe = /[A-Z][A-Za-z0-9]{2,}|[가-힣]{3,}[A-Za-z0-9]*|[가-힣]{2}[A-Za-z0-9]{2,}/g;
+      const stop = new Set([
+        "회사","법인","기업","해당","이번","최근","올해","지난해","글로벌","국내","해외",
+        "아마존","제품","매출","영업","이익","증권가","화장품","뷰티","시장","고객",
+        "미국","한국","일본","중국","유럽","일부","업종","배출량","강세","증가","호조",
+        "확대","출시","라인업","시리즈","브랜드","디바이스","마스크","앰플","크림","선크림",
+        "콜라겐","수출","수입","성장","규모","비중","현지","소비자","기업가치","주가",
+        corpName.replace(/[()주식회사\s]/g, ""), "에이피알", "APR",
+      ]);
+      // 한국어 조사 제거: "메디큐브는"→"메디큐브", "에이피알의"→"에이피알"
+      const stripJosa = (s: string): string => {
+        return s.replace(/(은|는|이|가|을|를|의|와|과|도|만|로|으로|에서|에게|부터|까지|에)$/, "");
+      };
+      const counts = new Map<string, number>();
+      let m: RegExpExecArray | null;
+      while ((m = tokenRe.exec(intro)) !== null) {
+        let tok = m[0];
+        // 동사 어미가 붙은 토큰 배제
+        if (/(했다|한다|된다|이다|있다|없다|관련|위해|통해|위한|대한|에서|으로)$/.test(tok)) continue;
+        tok = stripJosa(tok);
+        if (tok.length < 2) continue;
+        if (stop.has(tok)) continue;
+        counts.set(tok, (counts.get(tok) || 0) + 1);
+      }
+      return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([k]) => k)
+        .slice(0, 4);
+    };
+
+    const brands: string[] = (() => {
+      // 1순위: 사용자 직접 입력 (100% 신뢰)
+      if (userBrands.length > 0) return userBrands;
+      // 2순위: Gemini AI 추정
+      const list = (gOvEarly?.brands || []).filter(Boolean).map((b) => b.trim());
+      if (list.length > 0) return Array.from(new Set(list)).slice(0, 6);
+      // 3순위: intro 후처리 추출
+      const fromText = fallbackBrandsFromText(baseName, gOvEarly?.intro || "");
+      if (fromText.length > 0) return fromText;
+      // 4순위: 단일 휴리스틱
+      if (heuristicBrand && heuristicBrand !== baseName) return [heuristicBrand];
+      return [];
+    })();
+    const brand = brands[0] || null; // 대표 브랜드 (UI/하위 호환용)
+    const searchName = brand || baseName;
+    const useBrand = brands.length > 0;
+
+    // 다중 브랜드 검색: 회사명 결과 + 각 브랜드별 결과 합치기 (중복 제거)
+    const dedupeByUrl = <T extends { url: string }>(arr: T[]) => {
+      const seen = new Set<string>();
+      const out: T[] = [];
+      for (const x of arr) {
+        const k = (x.url || "").split("?")[0];
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        out.push(x);
+      }
+      return out;
+    };
+
+    const brandNewsLists = useBrand
+      ? await Promise.all(brands.map((b) => getNews(b, 10).catch(() => [] as NewsItem[])))
+      : [];
+    const brandBlogLists = useBrand
+      ? await Promise.all(brands.map((b) => getBlogs(b, 6).catch(() => [] as NewsItem[])))
+      : [];
+    const brandShopLists = useBrand
+      ? await Promise.all(brands.map((b) => getShopping(b, 8).catch(() => [])))
+      : [await getShopping(baseName, 12).catch(() => [])];
+
+    const brandNewsRaw = useBrand
+      ? dedupeByUrl([...brandNewsLists.flat(), ...corpNews]).slice(0, 30)
+      : corpNews;
+    const brandBlogRaw = useBrand
+      ? dedupeByUrl([...brandBlogLists.flat(), ...corpBlog]).slice(0, 20)
+      : corpBlog;
+    const shopping = dedupeByUrl(brandShopLists.flat()).slice(0, 12);
+    const homepageGuess = await findHomepage(searchName).catch(() => null);
+
+    // 뉴스 연관성 검증 — 다중 브랜드 키워드 매칭 (Gemini 미사용: quota 절약)
+    // 회사명 또는 운영 브랜드 중 하나라도 포함하는 기사만 통과
+    const allKeywords = [baseName, ...brands].filter(Boolean);
+    const matchAny = (item: NewsItem) => {
+      const blob = `${item.title} ${item.desc}`.toLowerCase();
+      return allKeywords.some((k) => blob.includes(k.toLowerCase()));
+    };
+    const filterRelevant = (raw: NewsItem[]) => {
+      const matched = raw.filter(matchAny);
+      return matched.length > 0 ? matched : raw;
+    };
+    const relevantNews = filterRelevant(brandNewsRaw);
+    const relevantBlog = filterRelevant(brandBlogRaw);
+
+    // 기업개요: Gemini 통합 호출은 이미 위에서 1회 실행됨(gOvEarly) — 재호출하지 않음(quota 절약)
     const brandR = research(searchName, relevantNews, relevantBlog, shopping);
     const corpR = research(baseName, corpNews, corpBlog, []); // 법인 단위 고용/매출
-    const gOv = await geminiOverview(baseName, brand, relevantNews, relevantBlog).catch(() => null);
+    const gOv = gOvEarly;
 
     const intro = gOv?.intro || brandR.intro;
     const introSource: MetricSource = gOv
@@ -204,11 +306,18 @@ export async function GET(req: Request) {
       summary,
       overview,
       brand: brand || null,
+      brands,
+      brandsNote: gOv?.review || null,
       aiEnabled: isGeminiConfigured(),
       news: relevantNews.slice(0, 8),
       blog: relevantBlog.slice(0, 6),
       shopping,
       financialAnalysis,
+    }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+        "Pragma": "no-cache",
+      },
     });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || String(e) }, { status: 500 });

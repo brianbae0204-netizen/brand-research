@@ -71,20 +71,33 @@ export function FinancialTable({ summary }: { summary: FinancialSummaryRow[] }) 
                   let prev: number | null = null;
                   return (
                     <tr key={r.key} className={`border-b border-slate-100 last:border-0 ${r.highlight ? "bg-amber-50/40" : ""}`}>
-                      <td className={`px-4 py-2.5 ${r.highlight ? "font-bold text-slate-900" : "text-slate-700"}`}>
+                      <td className={`px-4 py-3 ${r.highlight ? "font-bold text-slate-900" : "text-slate-700"}`}>
                         {r.label}
                       </td>
                       {sorted.map((s) => {
                         const v = s.values[r.key];
                         const gr = growth(v, prev);
                         prev = v;
+                        const isFirstYear = s.year === sorted[0].year;
                         return (
-                          <td key={s.year} className="px-4 py-2.5 text-right tabular-nums">
-                            <div className={r.highlight ? "font-bold text-slate-900" : "text-slate-800"}>{fmt(v)}</div>
-                            {gr !== null && (
-                              <div className={`text-[10px] font-semibold ${gr >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                          <td key={s.year} className="px-4 py-3 text-right tabular-nums align-middle">
+                            <div className={r.highlight ? "font-bold text-slate-900 text-[15px]" : "text-slate-800"}>{fmt(v)}</div>
+                            {gr !== null ? (
+                              <div
+                                className={`mt-0.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] font-bold tabular-nums
+                                  ${gr >= 0
+                                    ? "bg-emerald-100 text-emerald-700"
+                                    : "bg-rose-100 text-rose-700"}`}
+                                title={`전년 대비 ${gr >= 0 ? "증가" : "감소"}`}
+                              >
                                 {gr >= 0 ? "▲" : "▼"} {Math.abs(gr).toFixed(1)}%
                               </div>
+                            ) : (
+                              isFirstYear && v !== null && (
+                                <div className="mt-0.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold text-slate-400 bg-slate-100">
+                                  기준연도
+                                </div>
+                              )
                             )}
                           </td>
                         );

@@ -78,34 +78,59 @@ export interface GeminiOverview {
   intro: string;
   businessArea: string;
   products: string[];
-  review: string; // 검수 코멘트 (검증 필요 사항)
+  brands: string[];   // 법인이 운영하는 자체 브랜드 (검색 키워드로도 사용)
+  review: string;     // 검수 코멘트 (검증 필요 사항)
 }
 
-/** 1) 기업개요 작성 + 자체 검수 */
+/** 1) 기업개요 + 운영 브랜드 통합 추출 (1회 호출로 4개 분야 동시 처리 — quota 절약)
+ *
+ * @param companyName  법인명 (DART 정식 표기, 예: "(주)에이피알")
+ * @param identifier   회사 식별 정보 (DART 종목코드·업종·홈페이지 등 — 동명이인 방지)
+ * @param brand        휴리스틱으로 추정된 운영 브랜드 (있을 시 힌트로 활용)
+ * @param news         네이버 뉴스 발췌
+ * @param blog         네이버 블로그 발췌
+ */
 export async function geminiOverview(
   companyName: string,
+  identifier: { stock_code?: string; induty_code?: string; homepage?: string; ceo?: string; est_dt?: string },
   brand: string | null,
   news: NewsItem[],
   blog: NewsItem[]
 ): Promise<GeminiOverview | null> {
-  const ctx = snippets([...news, ...blog], 18);
-  if (!ctx.trim()) return null;
-  const prompt = `당신은 한국 기업 리서치 애널리스트입니다. 아래 뉴스/블로그 발췌만을 근거로 "${companyName}"${
-    brand ? `(운영 브랜드: ${brand})` : ""
-  }의 기업 개요를 작성하세요.
+  const ctx = snippets([...news, ...blog], 22);
+  const idLines = [
+    identifier.stock_code ? `- 종목코드: ${identifier.stock_code}` : "",
+    identifier.induty_code ? `- 업종코드: ${identifier.induty_code}` : "",
+    identifier.ceo ? `- 대표이사: ${identifier.ceo}` : "",
+    identifier.est_dt ? `- 설립일: ${identifier.est_dt}` : "",
+    identifier.homepage ? `- 홈페이지: ${identifier.homepage}` : "",
+  ].filter(Boolean).join("\n");
+
+  const prompt = `당신은 한국 기업 리서치 애널리스트입니다. 아래 회사 식별 정보와 발췌를 종합해 "${companyName}"의 기업 개요와 자체 브랜드 라인업을 추출하세요.
+
+[회사 식별 정보 — DART 공시 기준]
+- 법인명: ${companyName}
+${idLines}
+${brand ? `- 추정 대표 브랜드: ${brand}` : ""}
 
 규칙:
-- 반드시 제공된 발췌에 근거할 것. 발췌에 없는 사실을 지어내지 말 것.
-- 발췌가 다른 회사 내용으로 보이면 무시할 것(동명이인/유사명 주의).
+- **회사 식별 정보로 정확히 어떤 회사인지 판단할 것** (동명이인·유사명 회사와 혼동 금지).
+- 발췌에 등장한 정보 우선, 발췌가 무관해 보이면 회사 식별 정보와 당신의 사전 지식을 활용해 정확한 사실만 기술.
+- **발췌가 노이즈(정치·사회 등 무관 기사)로 가득해도 회사 식별 정보로 회사를 특정하고, 사전 지식이 확실한 경우 그 지식을 사용**. 추측은 금지.
 - intro: 4~6문장의 자연스러운 한국어 기업 소개(사업 본질, 대표 브랜드/제품, 시장 포지션, 성장/확장).
 - businessArea: 한 줄 사업영역 요약.
-- products: 주요 제품/서비스명 배열(최대 6, 발췌에 등장한 것만).
-- review: 위 내용 중 근거가 약하거나 검증이 필요한 부분을 1~2문장으로 솔직히 지적.
+- products: 주요 제품/서비스명 배열 (최대 6).
+- brands: **법인이 실제 소유·운영하는 자체 브랜드** 또는 주력 제품 라인업 이름 (최대 6, **반드시 1개 이상 — 사전 지식으로라도 채울 것**).
+  · 회사명 자체가 곧 브랜드명이면 그대로 포함.
+  · 한국 소비자에게 가장 친숙한 표기(한글/영문) 1가지.
+  · 예: "(주)에이피알" → ["메디큐브","에이지알","에이프릴스킨","포맨트"], "비나우" → ["넘버즈인","Fwee","Knock"], "파워플레이어" → ["온그리디언츠"].
+  · 회사 식별 자체에 확신이 없다면 빈 배열도 가능하지만, intro에 회사 이름이 명확히 들어가면 brands도 반드시 채울 것.
+- review: 근거의 강·약(발췌 vs 사전 지식)을 1~2문장으로 솔직히 명시.
 
-JSON만 출력: {"intro": string, "businessArea": string, "products": string[], "review": string}
+JSON만 출력: {"intro": string, "businessArea": string, "products": string[], "brands": string[], "review": string}
 
-[발췌]
-${ctx}`;
+[뉴스·블로그 발췌 — 노이즈 있을 수 있음, 회사 관련된 것만 골라 사용]
+${ctx || "(발췌 없음 — 회사 식별 정보와 사전 지식 활용)"}`;
   return safeJson<GeminiOverview>(await callGemini(prompt, true));
 }
 
