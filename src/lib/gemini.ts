@@ -1,28 +1,64 @@
 import type { NewsItem } from "./types";
 
 /**
- * Google Gemini (AI Studio) 연동 — 무료 티어.
- *  키: https://aistudio.google.com/app/apikey → .env.local 의 GEMINI_API_KEY
+ * AI 연동 — Groq(Llama 3.3 70B) 우선 + Gemini 폴백.
  *
- * 용도
- *  1) 기업개요 작성 + 자체 검수
- *  2) 뉴스 연관성 검증(무관 기사 제거)
- *  3) 3개년 재무제표 분석
+ * 키 설정 (.env.local)
+ *  - GROQ_API_KEY    : https://console.groq.com  (1순위, 무료 한도 큼)
+ *  - GEMINI_API_KEY  : https://aistudio.google.com/app/apikey  (폴백, 한국어 품질)
  *
- * ⚠️ 생성 결과는 제공된 컨텍스트(공개 뉴스) 기반이며 단정이 아니다. 검증 필요.
- *  키 미설정/오류 시 모든 함수는 null 을 반환하여 호출부가 폴백하도록 한다.
+ * 라우팅
+ *  1) Groq가 설정되어 있으면 먼저 시도 (빠르고 한도 큼)
+ *  2) Groq 실패 또는 미설정 시 Gemini로 자동 폴백
+ *  3) 둘 다 실패하면 null 반환 (호출부가 휴리스틱 폴백)
+ *
+ * 용도: 기업개요·운영 브랜드 추출, 뉴스 연관성 검증, 3개년 재무 분석.
+ *
+ * ⚠️ 생성 결과는 제공된 컨텍스트 기반이며 단정이 아니다. 검증 필요.
  */
 
-const KEY = process.env.GEMINI_API_KEY?.trim() || "";
-const MODEL = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+const GEMINI_KEY = process.env.GEMINI_API_KEY?.trim() || "";
+const GEMINI_MODEL = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
+const GROQ_KEY = process.env.GROQ_API_KEY?.trim() || "";
+const GROQ_MODEL = process.env.GROQ_MODEL?.trim() || "llama-3.3-70b-versatile";
 
 export function isGeminiConfigured() {
-  return Boolean(KEY);
+  // 호출부 호환을 위해 이름 유지 — Groq 또는 Gemini 중 하나라도 설정되면 true
+  return Boolean(GROQ_KEY || GEMINI_KEY);
 }
 
+/** Groq (OpenAI 호환 API) — Llama 3.3 70B */
+async function callGroq(prompt: string, json = true): Promise<string | null> {
+  if (!GROQ_KEY) return null;
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${GROQ_KEY}`,
+      },
+      cache: "no-store",
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 2048,
+        ...(json ? { response_format: { type: "json_object" } } : {}),
+      }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content;
+    return typeof text === "string" ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Gemini (Google AI Studio) — 폴백 */
 async function callGemini(prompt: string, json = true): Promise<string | null> {
-  if (!KEY) return null;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${KEY}`;
+  if (!GEMINI_KEY) return null;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_KEY}`;
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -46,6 +82,26 @@ async function callGemini(prompt: string, json = true): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/** AI 라우터 — Groq 우선, 실패 시 Gemini 폴백
+ *  @param preferGemini  true면 Gemini 먼저 시도 (한국 니치 도메인 지식이 필요한 경우)
+ */
+async function callAI(prompt: string, json = true, preferGemini = false): Promise<string | null> {
+  if (preferGemini) {
+    // Gemini 우선 (한국어 니치 지식, 예: 브랜드↔법인 매핑)
+    if (GEMINI_KEY) {
+      const r = await callGemini(prompt, json);
+      if (r && r.trim()) return r;
+    }
+    return await callGroq(prompt, json);
+  }
+  // 기본: Groq 우선 (속도/한도)
+  if (GROQ_KEY) {
+    const r = await callGroq(prompt, json);
+    if (r && r.trim()) return r;
+  }
+  return await callGemini(prompt, json);
 }
 
 function safeJson<T>(raw: string | null): T | null {
@@ -95,7 +151,8 @@ export async function geminiOverview(
   identifier: { stock_code?: string; induty_code?: string; homepage?: string; ceo?: string; est_dt?: string },
   brand: string | null,
   news: NewsItem[],
-  blog: NewsItem[]
+  blog: NewsItem[],
+  homepageText?: string | null
 ): Promise<GeminiOverview | null> {
   const ctx = snippets([...news, ...blog], 22);
   const idLines = [
@@ -106,6 +163,10 @@ export async function geminiOverview(
     identifier.homepage ? `- 홈페이지: ${identifier.homepage}` : "",
   ].filter(Boolean).join("\n");
 
+  const homepageSection = homepageText
+    ? `[공식 홈페이지 텍스트 — 가장 신뢰도 높음, 우선 참고]\n${homepageText.slice(0, 1800)}\n\n`
+    : "";
+
   const prompt = `당신은 한국 기업 리서치 애널리스트입니다. 아래 회사 식별 정보와 발췌를 종합해 "${companyName}"의 기업 개요와 자체 브랜드 라인업을 추출하세요.
 
 [회사 식별 정보 — DART 공시 기준]
@@ -114,24 +175,23 @@ ${idLines}
 ${brand ? `- 추정 대표 브랜드: ${brand}` : ""}
 
 규칙:
+- **공식 홈페이지 텍스트가 있으면 그것을 1순위 근거로 삼아 intro를 작성할 것**. 홈페이지 소개 문구를 자연스러운 한국어로 재구성.
 - **회사 식별 정보로 정확히 어떤 회사인지 판단할 것** (동명이인·유사명 회사와 혼동 금지).
 - 발췌에 등장한 정보 우선, 발췌가 무관해 보이면 회사 식별 정보와 당신의 사전 지식을 활용해 정확한 사실만 기술.
-- **발췌가 노이즈(정치·사회 등 무관 기사)로 가득해도 회사 식별 정보로 회사를 특정하고, 사전 지식이 확실한 경우 그 지식을 사용**. 추측은 금지.
 - intro: 4~6문장의 자연스러운 한국어 기업 소개(사업 본질, 대표 브랜드/제품, 시장 포지션, 성장/확장).
 - businessArea: 한 줄 사업영역 요약.
 - products: 주요 제품/서비스명 배열 (최대 6).
-- brands: **법인이 실제 소유·운영하는 자체 브랜드** 또는 주력 제품 라인업 이름 (최대 6, **반드시 1개 이상 — 사전 지식으로라도 채울 것**).
+- brands: **법인이 실제 소유·운영하는 자체 브랜드** 또는 주력 제품 라인업 이름 (최대 6, **반드시 1개 이상**).
   · 회사명 자체가 곧 브랜드명이면 그대로 포함.
   · 한국 소비자에게 가장 친숙한 표기(한글/영문) 1가지.
   · 예: "(주)에이피알" → ["메디큐브","에이지알","에이프릴스킨","포맨트"], "비나우" → ["넘버즈인","Fwee","Knock"], "파워플레이어" → ["온그리디언츠"].
-  · 회사 식별 자체에 확신이 없다면 빈 배열도 가능하지만, intro에 회사 이름이 명확히 들어가면 brands도 반드시 채울 것.
-- review: 근거의 강·약(발췌 vs 사전 지식)을 1~2문장으로 솔직히 명시.
+- review: 근거의 강·약(홈페이지/발췌/사전 지식)을 1~2문장으로 솔직히 명시.
 
 JSON만 출력: {"intro": string, "businessArea": string, "products": string[], "brands": string[], "review": string}
 
-[뉴스·블로그 발췌 — 노이즈 있을 수 있음, 회사 관련된 것만 골라 사용]
-${ctx || "(발췌 없음 — 회사 식별 정보와 사전 지식 활용)"}`;
-  return safeJson<GeminiOverview>(await callGemini(prompt, true));
+${homepageSection}[뉴스·블로그 발췌 — 노이즈 있을 수 있음, 회사 관련된 것만 골라 사용]
+${ctx || "(발췌 없음 — 홈페이지 텍스트 및 사전 지식 활용)"}`;
+  return safeJson<GeminiOverview>(await callAI(prompt, true));
 }
 
 /** 2) 뉴스 연관성 검증 — 회사/브랜드와 무관한 기사 인덱스를 제거 */
@@ -150,7 +210,7 @@ JSON만 출력: {"relevant": number[]}
 
 [기사]
 ${list}`;
-  const out = safeJson<{ relevant: number[] }>(await callGemini(prompt, true));
+  const out = safeJson<{ relevant: number[] }>(await callAI(prompt, true));
   if (!out || !Array.isArray(out.relevant)) return null;
   return out.relevant.filter((i) => Number.isInteger(i) && i >= 0 && i < news.length);
 }
@@ -192,7 +252,7 @@ export async function geminiScreening(
 
 [컨텍스트]
 ${context}`;
-  return safeJson<GeminiScreening>(await callGemini(prompt, true));
+  return safeJson<GeminiScreening>(await callAI(prompt, true));
 }
 
 /** 3) 3개년 재무제표 분석 */
@@ -210,5 +270,49 @@ export async function geminiFinancialAnalysis(
 
 [재무 요약]
 ${rowsText}`;
-  return await callGemini(prompt, false);
+  return await callAI(prompt, false);
+}
+
+/** 5) 브랜드명 → 운영 법인 매핑 (AI 사전지식 기반)
+ *  예: "온그리디언츠" → "파워플레이어", "메디큐브" → "에이피알"
+ *  DART 등록명 기준으로 한국 법인의 정식 명칭을 찾는다.
+ */
+export interface CorpResolution {
+  corpName: string | null;    // DART 등록명 (예: "파워플레이어", "에이피알") — 확실하지 않으면 null
+  confidence: "high" | "medium" | "low";
+  reason: string;             // 매핑 근거 (예: "온그리디언츠는 (주)파워플레이어가 운영하는 클린뷰티 D2C 브랜드")
+}
+
+export async function aiResolveCorp(brand: string): Promise<CorpResolution | null> {
+  if (!brand.trim()) return null;
+  const prompt = `당신은 한국 기업 데이터 전문가입니다. 아래 브랜드명을 운영하는 한국 법인의 정식 명칭을 찾으세요.
+
+[브랜드명] ${brand}
+
+규칙:
+- 한국 DART(전자공시) 등록명 기준 법인 정식 명칭만 출력 ("(주)" 접두어는 생략).
+- 본인의 사전 지식 기반. 확실하지 않으면 corpName: null, confidence: "low".
+- 가장 확실한 1개 법인만 반환.
+- 같은 브랜드를 여러 회사가 사용하는 경우, **K-뷰티·소비재·커머스** 분야 한국 법인을 우선.
+
+예시:
+- "온그리디언츠" → {"corpName": "파워플레이어", "confidence": "high", "reason": "온그리디언츠는 (주)파워플레이어가 운영하는 클린뷰티 D2C 브랜드"}
+- "메디큐브" → {"corpName": "에이피알", "confidence": "high", "reason": "메디큐브는 (주)에이피알의 뷰티 디바이스/스킨케어 브랜드"}
+- "넘버즈인" → {"corpName": "비나우", "confidence": "high", "reason": "비나우가 운영하는 색조 멀티브랜드"}
+- "글램팜" → {"corpName": "언일전자", "confidence": "high", "reason": "언일전자의 헤어스타일러 브랜드"}
+
+JSON만 출력: {"corpName": string | null, "confidence": "high"|"medium"|"low", "reason": string}`;
+
+  // 1차: Gemini 우선 (한국 니치 브랜드 지식이 우세)
+  const first = safeJson<CorpResolution>(await callAI(prompt, true, /* preferGemini */ true));
+  if (first?.corpName && first.confidence !== "low") return first;
+
+  // 2차: 첫 시도가 null·low 면 Groq로 재시도 (두 모델 의견 다를 수 있음)
+  if (GROQ_KEY && GEMINI_KEY) {
+    const second = safeJson<CorpResolution>(await callGroq(prompt, true));
+    if (second?.corpName && second.confidence !== "low") return second;
+  }
+
+  // 둘 다 자신 없으면 첫 응답(또는 null) 그대로
+  return first;
 }

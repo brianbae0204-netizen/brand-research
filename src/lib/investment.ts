@@ -89,13 +89,16 @@ export async function extractInvestment(
     /* 네이버 키 미설정 등 — presetNews만으로 진행 */
   }
 
+  // "누적" 키워드가 있는 기사에서 명시된 누적 금액을 최우선으로 사용
+  const CUMULATIVE_HINT = /누적\s*투자|총\s*투자유치|누적\s*유치|투자\s*총액|총\s*누적/;
+
   const evidence: InvestmentInfo["evidence"] = [];
   let bestStage: { label: string; rank: number } | null = null;
-  let maxAmount: number | null = null;
+  let cumulativeAmount: number | null = null; // "누적 xxx억" 기사에서 추출
+  const roundAmounts: number[] = [];           // 개별 라운드 금액 목록
 
   for (const n of news) {
     const blob = `${n.title} ${n.desc}`;
-    // 회사명이 본문에 등장하고 투자 관련 키워드가 있는 기사만 채택
     const mentionsCompany = blob
       .replace(/\s+/g, "")
       .toLowerCase()
@@ -108,10 +111,14 @@ export async function extractInvestment(
         bestStage = { label: s.label, rank: s.rank };
       }
     }
-    // 금액 (투자 맥락에 한함)
+    // 금액 — 누적 언급 기사와 개별 라운드 기사 분리
     const amt = parseInvestAmount(blob);
-    if (amt && (maxAmount === null || amt.value > maxAmount)) {
-      maxAmount = amt.value;
+    if (amt) {
+      if (CUMULATIVE_HINT.test(blob)) {
+        if (cumulativeAmount === null || amt.value > cumulativeAmount) cumulativeAmount = amt.value;
+      } else {
+        roundAmounts.push(amt.value);
+      }
     }
 
     evidence.push({
@@ -125,9 +132,14 @@ export async function extractInvestment(
   const dealCount = evidence.length;
   const confidence = dealCount > 0 ? "estimated" : "unknown";
 
+  // 누적 금액 우선 → 없으면 라운드별 합산 (단, 같은 금액 중복 제거)
+  const uniqueRounds = [...new Set(roundAmounts)];
+  const sumRounds = uniqueRounds.reduce((a, b) => a + b, 0);
+  const totalAmount = cumulativeAmount ?? (sumRounds > 0 ? sumRounds : null);
+
   return {
     stage: bestStage?.label ?? null,
-    totalAmount: maxAmount,
+    totalAmount,
     dealCount,
     evidence: evidence.slice(0, 8),
     source: {

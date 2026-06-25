@@ -62,7 +62,7 @@ function soft(label: string, raw: string | undefined): ScreeningField {
     label,
     value: isInfo ? v : NO_INFO,
     source: {
-      source: "Gemini AI",
+      source: "AI (Groq/Gemini)",
       confidence: isInfo ? "estimated" : "unknown",
       note: isInfo ? "AI 추정 — 검증 필요." : undefined,
     },

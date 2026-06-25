@@ -103,3 +103,38 @@ export async function findHomepage(companyName: string): Promise<string | null> 
 export function isNaverConfigured() {
   return Boolean(ID && SECRET);
 }
+
+/**
+ * 홈페이지 URL에서 텍스트를 추출 (meta description + og:description + body 텍스트).
+ * AI 기업 소개 생성 시 뉴스보다 신뢰도 높은 1차 소스로 활용.
+ */
+export async function fetchHomepageText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (compatible; ResearchBot/1.0)" },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    // meta description (순서 무관 속성)
+    const metaDesc =
+      html.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']{10,500})["']/i)?.[1] ||
+      html.match(/<meta[^>]+content=["']([^"']{10,500})["'][^>]+name=["']description["']/i)?.[1] || "";
+    const ogDesc =
+      html.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']{10,500})["']/i)?.[1] ||
+      html.match(/<meta[^>]+content=["']([^"']{10,500})["'][^>]+property=["']og:description["']/i)?.[1] || "";
+    // body 순수 텍스트 (스크립트·스타일 제거)
+    const body = html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&[a-z#0-9]+;/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 2500);
+    const parts = [metaDesc, ogDesc, body].filter(Boolean);
+    return parts.length > 0 ? parts.join("\n\n") : null;
+  } catch {
+    return null;
+  }
+}

@@ -171,6 +171,14 @@ export interface DataSource {
   priority?: number;
 }
 
+/** 브랜드 → 운영 법인 자동 매핑 (AI 사전지식) */
+export interface BrandCorpMapping {
+  input: string;     // 사용자 입력 원본 (브랜드명, 예: "온그리디언츠")
+  mappedTo: string;  // AI 매핑 결과 법인명 (예: "파워플레이어")
+  confidence: "high" | "medium" | "low";
+  reason: string;    // 매핑 근거 (사용자 표시용)
+}
+
 export interface SearchResult {
   query: string;
   purpose: ResearchPurpose;
@@ -181,4 +189,6 @@ export interface SearchResult {
   naver_shopping: ShoppingItem[];
   data_sources: Record<string, DataSource[]>;
   warnings: string[];
+  /** DART 검색 0건일 때 AI가 브랜드→법인 매핑 후 재검색한 경우 표시 */
+  mappedFrom?: BrandCorpMapping;
 }

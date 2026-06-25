@@ -5,7 +5,7 @@ import {
   summarize,
   isDartConfigured,
 } from "@/lib/dart";
-import { getNews, getBlogs, getShopping, findHomepage } from "@/lib/naver";
+import { getNews, getBlogs, getShopping, findHomepage, fetchHomepageText } from "@/lib/naver";
 import { getEmploymentInfo } from "@/lib/publicdata";
 import { extractInvestment } from "@/lib/investment";
 import { research, extractBrand } from "@/lib/research";
@@ -14,6 +14,7 @@ import {
   geminiOverview,
   geminiFinancialAnalysis,
 } from "@/lib/gemini";
+import { scrapeFinancials } from "@/lib/webscrape";
 import type {
   CompanyOverview, EmploymentInfo, FinancialAnalysis, FinancialSummaryRow,
   MetricSource, NewsItem,
@@ -75,13 +76,14 @@ export async function GET(req: Request) {
   try {
     const info = corp_code && isDartConfigured() ? await getCompanyInfo(corp_code) : null;
     const baseName = info?.corp_name || q;
+    const dartHmUrl = info?.hm_url && info.hm_url !== "-" ? info.hm_url : null;
 
     // 1차: 법인명 기준 — 회사명만으로는 무관 기사(정치/사회 등)가 섞이므로
     // "회사명 + 회사" 또는 "(주)회사명" 같은 modifier를 추가해 검색 정밀도 향상
     const corpQuery = baseName.startsWith("(주)") || baseName.includes("주식회사")
       ? baseName
       : `${baseName} 회사`;
-    const [corpNewsRaw1, corpNewsRaw2, corpBlog, summary, employmentNps] = await Promise.all([
+    const [corpNewsRaw1, corpNewsRaw2, corpBlog, summary, employmentNps, dartHomepageText] = await Promise.all([
       getNews(corpQuery, 15).catch(() => [] as NewsItem[]),
       getNews(`(주)${baseName.replace(/^\(주\)/, "")}`, 10).catch(() => [] as NewsItem[]),
       getBlogs(`${baseName} 회사`, 12).catch(() => [] as NewsItem[]),
@@ -89,6 +91,8 @@ export async function GET(req: Request) {
         ? getFinancials(corp_code).then(summarize).catch(() => [] as FinancialSummaryRow[])
         : Promise.resolve([] as FinancialSummaryRow[]),
       getEmploymentInfo(baseName).catch(() => null),
+      // 홈페이지 텍스트 크롤링 — DART URL 있으면 바로 시도
+      dartHmUrl ? fetchHomepageText(dartHmUrl).catch(() => null) : Promise.resolve(null),
     ]);
     // 두 쿼리 결과 합치고 중복 제거 (회사 단위 뉴스 풀)
     const corpDedupe = new Map<string, NewsItem>();
@@ -107,10 +111,15 @@ export async function GET(req: Request) {
       ceo: info?.ceo_nm,
       est_dt: info?.est_dt,
     };
+    // 홈페이지 텍스트: DART URL로 못 가져왔으면 네이버 웹문서로 추정 후 추가 시도
+    const homepageGuessUrl = dartHmUrl ? null : await findHomepage(baseName).catch(() => null);
+    const homepageText = dartHomepageText ||
+      (homepageGuessUrl ? await fetchHomepageText(homepageGuessUrl).catch(() => null) : null);
+
     // 사용자 입력이 있으면 Gemini 호출 스킵 (quota 절약 + 정확성 보장)
     const gOvEarly = userBrands.length > 0
       ? null
-      : await geminiOverview(baseName, dartIdentifier, heuristicBrand, corpNews, corpBlog).catch(() => null);
+      : await geminiOverview(baseName, dartIdentifier, heuristicBrand, corpNews, corpBlog, homepageText).catch(() => null);
 
     /** Gemini brands가 비었을 때 — intro 본문에서 brand-like 고유명사만 엄격 추출
      * 너무 헐거운 패턴은 정치·일반 단어까지 잡으므로 boundary 조건을 강화 */
@@ -194,7 +203,7 @@ export async function GET(req: Request) {
       ? dedupeByUrl([...brandBlogLists.flat(), ...corpBlog]).slice(0, 20)
       : corpBlog;
     const shopping = dedupeByUrl(brandShopLists.flat()).slice(0, 12);
-    const homepageGuess = await findHomepage(searchName).catch(() => null);
+    const homepageGuess = homepageGuessUrl || await findHomepage(searchName).catch(() => null);
 
     // 뉴스 연관성 검증 — 다중 브랜드 키워드 매칭 (Gemini 미사용: quota 절약)
     // 회사명 또는 운영 브랜드 중 하나라도 포함하는 기사만 통과
@@ -217,7 +226,7 @@ export async function GET(req: Request) {
 
     const intro = gOv?.intro || brandR.intro;
     const introSource: MetricSource = gOv
-      ? { source: "Gemini AI 요약", confidence: "estimated", verifyUrl: brandR.introSource.verifyUrl, note: "AI 생성 — 발췌 근거 기반, 검증 필요." }
+      ? { source: "AI 요약 (Groq/Gemini)", confidence: "estimated", verifyUrl: brandR.introSource.verifyUrl, note: "AI 생성 — 발췌 근거 기반, 검증 필요." }
       : brandR.introSource;
     const businessArea = gOv?.businessArea || brandR.businessArea;
     const products = (gOv?.products && gOv.products.length > 0 ? gOv.products : brandR.products).slice(0, 6);
@@ -234,18 +243,39 @@ export async function GET(req: Request) {
     else if (corpR.headcount !== null) employment = { headcount: corpR.headcount, source: corpR.headcountSource };
     else employment = employmentNps ?? { headcount: null, source: { source: "국민연금/기사", confidence: "unknown" } };
 
-    // 매출: DART 우선 → 기사 폴백
+    // 매출: DART 우선 → 웹 크롤링 → 뉴스 폴백
     const dartRev = latestRevenue(summary);
+    let webScraped: Awaited<ReturnType<typeof scrapeFinancials>> = null;
+    if (dartRev.value === null) {
+      // DART에 재무 데이터가 없을 때만 웹 크롤링 시도 (속도 절약)
+      webScraped = await scrapeFinancials(baseName).catch(() => null);
+      // 웹 크롤링 결과를 summary에 병합 (재무표·차트에서 활용)
+      if (webScraped && webScraped.rows.length > 0) {
+        summary.push(...webScraped.rows);
+      }
+    }
+    const webRev = webScraped ? latestRevenue(webScraped.rows) : { value: null, year: null };
+
     let revenue: { value: number | null; year: number | null; source: MetricSource };
     if (dartRev.value !== null) {
       revenue = {
         value: dartRev.value, year: dartRev.year,
         source: { source: "DART 재무제표", confidence: "confirmed", verifyUrl: `https://dart.fss.or.kr/dsab007/main.do?textCrpNm=${encodeURIComponent(baseName)}` },
       };
+    } else if (webRev.value !== null) {
+      revenue = {
+        value: webRev.value, year: webRev.year,
+        source: {
+          source: `웹 크롤링 (${webScraped!.sourceUrl.replace(/^https?:\/\/([^/]+).*/, "$1")})`,
+          confidence: "estimated",
+          verifyUrl: webScraped!.sourceUrl,
+          note: webScraped!.note,
+        },
+      };
     } else if (corpR.revenue.value !== null) {
       revenue = { value: corpR.revenue.value, year: corpR.revenue.year, source: corpR.revenueSource };
     } else {
-      revenue = { value: null, year: dartRev.year, source: { source: "DART 재무제표", confidence: "unknown", note: "공시·기사에서 매출을 찾지 못했습니다." } };
+      revenue = { value: null, year: dartRev.year, source: { source: "DART 재무제표", confidence: "unknown", note: "공시·크롤링·기사 모두에서 매출을 찾지 못했습니다." } };
     }
 
     // 홈페이지
@@ -263,7 +293,7 @@ export async function GET(req: Request) {
       if (analysis) {
         financialAnalysis = {
           text: analysis,
-          source: { source: "Gemini AI 분석", confidence: "estimated", note: "AI 해석 — 투자판단 아님, 검증 필요." },
+          source: { source: "AI 분석 (Groq/Gemini)", confidence: "estimated", note: "AI 해석 — 투자판단 아님, 검증 필요." },
         };
       }
     }
@@ -283,7 +313,7 @@ export async function GET(req: Request) {
       businessArea,
       products,
       businessSource: gOv
-        ? { source: "Gemini AI", confidence: "estimated" }
+        ? { source: "AI (Groq/Gemini)", confidence: "estimated" }
         : brandR.businessSource,
       keywords,
       brand: brand || null,

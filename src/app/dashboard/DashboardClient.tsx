@@ -16,6 +16,8 @@ import { FinancialTable } from "@/components/FinancialTable";
 import { FinancialChart } from "@/components/FinancialChart";
 import { DataSourceCard } from "@/components/DataSourceCard";
 import { CompanyOverviewCard } from "@/components/CompanyOverview";
+import { BrandScoreChart } from "@/components/BrandScoreChart";
+import type { BrandScoreResult } from "@/lib/brandscore";
 
 function fmtKR(v: number | null | undefined) {
   if (v === null || v === undefined) return "-";
@@ -55,6 +57,10 @@ export default function DashboardClient() {
   const [brand, setBrand] = useState<string | null>(null);
   const [finAnalysis, setFinAnalysis] = useState<FinancialAnalysis | null>(null);
   const [finLoading, setFinLoading] = useState(false);
+  const [brandScore, setBrandScore] = useState<BrandScoreResult | null>(null);
+  const [brandTrend, setBrandTrend] = useState<any>(null);
+  const [brandEcommerce, setBrandEcommerce] = useState<any>(null);
+  const [scoreLoading, setScoreLoading] = useState(false);
 
   // 초기 검색 (DART 후보)
   useEffect(() => {
@@ -90,6 +96,24 @@ export default function DashboardClient() {
       })
       .finally(() => setFinLoading(false));
   }, [query, selectedCorp, data, userBrands]);
+
+  // 브랜드 점수 — 개요 데이터가 로드된 후 별도 요청
+  useEffect(() => {
+    if (!query || finLoading) return;
+    setScoreLoading(true);
+    const cc = selectedCorp?.corp_code || "";
+    const brandParam = brand ? `&brand=${encodeURIComponent(brand)}` : "";
+    fetch(`/api/brand-score?q=${encodeURIComponent(query)}&corp_code=${cc}${brandParam}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.axes) setBrandScore(d);
+        if (d.trend) setBrandTrend(d.trend);
+        if (d.ecommerce) setBrandEcommerce(d.ecommerce);
+      })
+      .catch(() => {})
+      .finally(() => setScoreLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, selectedCorp, finLoading]);
 
   const kpi = useMemo(() => {
     if (!financials || financials.length === 0) return null;
@@ -157,6 +181,27 @@ export default function DashboardClient() {
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
 
+        {/* AI 브랜드 → 법인 자동 매핑 알림 */}
+        {data.mappedFrom && (
+          <section className="rounded-xl bg-gradient-to-r from-violet-50 to-indigo-50 border border-violet-200 p-4">
+            <div className="flex items-start gap-3">
+              <Sparkles className="w-5 h-5 text-violet-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 text-sm">
+                <div className="font-semibold text-violet-900 mb-1">
+                  AI 자동 매핑: 「{data.mappedFrom.input}」 → 「{data.mappedFrom.mappedTo}」
+                  <span className="ml-2 text-[10px] font-medium uppercase tracking-wider text-violet-600 bg-violet-100 px-1.5 py-0.5 rounded">
+                    confidence: {data.mappedFrom.confidence}
+                  </span>
+                </div>
+                <p className="text-slate-700 leading-relaxed">{data.mappedFrom.reason}</p>
+                <p className="text-[11px] text-slate-500 mt-1.5">
+                  💡 입력하신 브랜드명이 DART 등록명과 달라 AI가 운영 법인을 추정했습니다. 아래에 DART 후보가 표시됩니다.
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* DART 후보 선택 */}
         {data.dart_candidates.length > 0 && (
           <section className="card p-4 sm:p-5">
@@ -205,6 +250,23 @@ export default function DashboardClient() {
             </div>
           </section>
         )}
+
+        {/* 브랜드 투자 평가 지표 (오각형 레이더 차트) */}
+        {scoreLoading && !brandScore ? (
+          <section className="card p-10 text-center text-slate-500">
+            <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2" />
+            투자 평가 지표 계산 중... <span className="text-xs text-slate-400">(재무·트렌드·브랜드파워 종합)</span>
+          </section>
+        ) : brandScore ? (
+          <section>
+            <BrandScoreChart
+              result={brandScore}
+              trendData={brandTrend}
+              ecommerce={brandEcommerce}
+              corpName={data.query}
+            />
+          </section>
+        ) : null}
 
         {/* 재무제표 */}
         {selectedCorp && (
@@ -313,20 +375,25 @@ export default function DashboardClient() {
           </section>
         )}
 
-        {/* 경고 */}
-        {data.warnings.length > 0 && (
-          <section className="card p-4 bg-amber-50 border-amber-200">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-              <div>
-                <div className="text-sm font-bold text-amber-900 mb-1">수집 한계</div>
-                <ul className="text-xs text-amber-800 space-y-0.5 list-disc list-inside">
-                  {data.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                </ul>
+        {/* 경고 — API 키 설정 안내 등 시스템 메시지는 숨기고 실제 수집 실패만 표시 */}
+        {(() => {
+          const uniqueWarnings = [...new Set(data.warnings)].filter(
+            (w) => !w.includes("API 키가 설정되지 않아") && !w.includes("DATA_GO_KR_KEY")
+          );
+          return uniqueWarnings.length > 0 ? (
+            <section className="card p-4 bg-amber-50 border-amber-200">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <div className="text-sm font-bold text-amber-900 mb-1">수집 한계</div>
+                  <ul className="text-xs text-amber-800 space-y-0.5 list-disc list-inside">
+                    {uniqueWarnings.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                </div>
               </div>
-            </div>
-          </section>
-        )}
+            </section>
+          ) : null;
+        })()}
 
         <footer className="text-center text-xs text-slate-400 py-6">
           공공·무료 데이터(DART·국민연금·네이버) + AI 요약 기반 · CJ ENM 성장추진팀 · 수치·요약은 검증 필요
