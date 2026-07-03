@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { getFinancials, summarize, isDartConfigured } from "@/lib/dart";
 import { getNews, getBlogs, getShopping } from "@/lib/naver";
 import { scrapeFinancials } from "@/lib/webscrape";
-import { extractInvestment } from "@/lib/investment";
 import { getSearchTrend, trendToBonus } from "@/lib/trends";
 import { scrapeOliveYoung, scrapeCoupang } from "@/lib/ecommerce";
 import { computeBrandScore } from "@/lib/brandscore";
@@ -34,11 +33,10 @@ export async function GET(req: Request) {
 
     // 2. 브랜드 기준 네이버 + e커머스 데이터 병렬 수집
     const searchTerm = brand || q;
-    const [news, blog, shopping, investment, trend, oliveYoung, coupang] = await Promise.all([
+    const [news, blog, shopping, trend, oliveYoung, coupang] = await Promise.all([
       getNews(searchTerm, 15).catch(() => [] as NewsItem[]),
       getBlogs(searchTerm, 10).catch(() => [] as NewsItem[]),
       getShopping(searchTerm, 12).catch(() => []),
-      extractInvestment(q, undefined).catch(() => null),
       getSearchTrend(searchTerm, []).catch(() => null),
       scrapeOliveYoung(searchTerm).catch(() => null),
       scrapeCoupang(searchTerm).catch(() => null),
@@ -47,7 +45,7 @@ export async function GET(req: Request) {
     const trendBonus = trend ? trendToBonus(trend) : null;
 
     // 3. 점수 계산
-    const result = computeBrandScore({ financials, news, blog, shopping, investment, trendScore: trendBonus, oliveYoung, coupang });
+    const result = computeBrandScore({ financials, news, blog, shopping, trendScore: trendBonus, oliveYoung, coupang });
 
     return NextResponse.json({
       ...result,

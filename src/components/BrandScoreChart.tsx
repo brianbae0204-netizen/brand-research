@@ -40,7 +40,7 @@ const CX = SIZE / 2;
 const CY = SIZE / 2;
 const MAX_R = 115;
 const GRID_LEVELS = [20, 40, 60, 80, 100];
-const AXIS_COUNT = 5;
+const AXIS_COUNT = 4;
 
 function polar(angle: number, r: number) {
   return {
@@ -49,7 +49,7 @@ function polar(angle: number, r: number) {
   };
 }
 
-// 5개 축 각도 (위에서 시작, 시계방향)
+// N개 축 각도 (위에서 시작, 시계방향)
 const ANGLES = Array.from({ length: AXIS_COUNT }, (_, i) =>
   -Math.PI / 2 + (i * 2 * Math.PI) / AXIS_COUNT
 );
@@ -138,7 +138,9 @@ export function BrandScoreChart({ result, trendData, ecommerce, corpName }: Prop
             🏆 브랜드 투자 평가 지표
             {corpName && <span className="text-sm font-normal text-slate-500">— {corpName}</span>}
           </h2>
-          <p className="text-xs text-slate-500 mt-0.5">투자자 관점 5축 종합 평가 · 점수는 추정치이므로 검증 필요</p>
+          <p className="text-xs text-slate-500 mt-0.5">
+            투자자 관점 4축(성장성·수익성·글로벌 성장 가능성·브랜드파워) 종합 평가 · 업계 평균(CAGR 15~20%, OPM 8~10%)=양호 기준 보정 · 점수는 추정치이므로 검증 필요
+          </p>
         </div>
         {/* 종합 등급 뱃지 */}
         <div className="flex items-center gap-3">

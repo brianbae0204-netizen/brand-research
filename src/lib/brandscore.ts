@@ -1,17 +1,20 @@
 /**
- * 브랜드 투자 평가 지표 — 5축 오각형 레이더 차트용 점수 계산
+ * 브랜드 투자 평가 지표 — 4축 레이더 차트용 점수 계산
  *
  * 축 정의 (투자자 관점):
- *  1. 성장성      — 3개년 매출 CAGR · 뉴스 트렌드
- *  2. 수익성      — 영업이익률 · 당기순이익률
- *  3. 브랜드파워  — 쇼핑 노출 · 뉴스·블로그 언급량 · 채널 다양성
- *  4. 시장확장성  — 판매 채널 수 · 카테고리 다양성 · 글로벌 진출
- *  5. 투자매력도  — 투자 단계 · 누적 투자금액 · 최근성
+ *  1. 성장성          — 매출 CAGR · 뉴스 트렌드
+ *  2. 수익성          — 영업이익률 · 당기순이익률
+ *  3. 글로벌 성장 가능성 — 해외 진출·글로벌 플랫폼(아마존·세포라 등) 노출
+ *  4. 브랜드파워      — 쇼핑 노출 · 뉴스·블로그 언급량 · 소비자 리뷰(올리브영/쿠팡)
  *
  * 모든 점수: 0~100  (20 이하=위험, 40=보통, 60=양호, 80=우수, 95=탁월)
+ *
+ * 채점 기준(캘리브레이션): 업계 평균 수준(매출 CAGR 15~20%, 영업이익률 8~10%)을
+ * "양호(60점대)"로 보정. 성장기 재투자로 인한 저마진은 그 자체로 감점 요인이
+ * 아니므로 중립값을 기본으로 함.
  */
 
-import type { FinancialSummaryRow, InvestmentInfo, NewsItem, ShoppingItem } from "./types";
+import type { FinancialSummaryRow, NewsItem, ShoppingItem } from "./types";
 import type { OliveYoungData, CoupangData } from "./ecommerce";
 
 export interface BrandAxisScore {
@@ -24,8 +27,8 @@ export interface BrandAxisScore {
 }
 
 export interface BrandScoreResult {
-  axes: [BrandAxisScore, BrandAxisScore, BrandAxisScore, BrandAxisScore, BrandAxisScore];
-  overall: number;        // 5축 평균
+  axes: [BrandAxisScore, BrandAxisScore, BrandAxisScore, BrandAxisScore];
+  overall: number;        // 4축 평균
   grade: "S" | "A" | "B" | "C" | "D";
   gradeLabel: string;
   summary: string;        // AI 없이 규칙 기반 요약
@@ -75,13 +78,16 @@ export function scoreGrowth(
     if (first > 0 && years > 0) {
       const cagr = (Math.pow(last / first, 1 / years) - 1) * 100;
       sub.push({ label: "매출 CAGR", value: `${cagr >= 0 ? "+" : ""}${cagr.toFixed(1)}%` });
-      if (cagr < -10) score = 10;
-      else if (cagr < 0) score = 22;
-      else if (cagr < 10) score = 38;
-      else if (cagr < 20) score = 52;
-      else if (cagr < 40) score = 65;
-      else if (cagr < 80) score = 78;
-      else score = 90;
+      // 업계 평균 CAGR(15~20%)을 "양호"로 보는 기준으로 보정
+      if (cagr < -10) score = 15;
+      else if (cagr < 0) score = 30;
+      else if (cagr < 5) score = 42;
+      else if (cagr < 10) score = 50;
+      else if (cagr < 15) score = 58;
+      else if (cagr < 20) score = 65;
+      else if (cagr < 30) score = 73;
+      else if (cagr < 50) score = 82;
+      else score = 92;
       detail = `${years}개년 매출 CAGR ${cagr >= 0 ? "+" : ""}${cagr.toFixed(1)}%`;
       confidence = sorted[0].fs_div === "WEB" ? "estimated" : "confirmed";
     }
@@ -135,15 +141,16 @@ export function scoreProfitability(financials: FinancialSummaryRow[]): BrandAxis
   if (ni !== null && rev > 0) sub.push({ label: "순이익률", value: `${((ni / rev) * 100).toFixed(1)}%` });
 
   let score: number;
-  if (opm < -20) score = 8;
-  else if (opm < -10) score = 18;
-  else if (opm < -3) score = 28;
-  else if (opm < 0) score = 35;
-  else if (opm < 5) score = 45;
-  else if (opm < 10) score = 58;
-  else if (opm < 20) score = 70;
-  else if (opm < 30) score = 82;
-  else score = 92;
+  // 업계 평균 OPM(8~10%)을 "양호"로 보는 기준으로 보정 — 성장기 재투자로 인한 저마진을 과도하게 벌점하지 않음
+  if (opm < -20) score = 15;
+  else if (opm < -10) score = 25;
+  else if (opm < -3) score = 35;
+  else if (opm < 0) score = 42;
+  else if (opm < 3) score = 50;
+  else if (opm < 8) score = 58;
+  else if (opm < 15) score = 68;
+  else if (opm < 25) score = 80;
+  else score = 90;
 
   // 3개년 개선 트렌드 보정
   if (sorted.length >= 2) {
@@ -243,133 +250,51 @@ export function scoreBrandPower(
 }
 
 // ─────────────────────────────────────────────
-// 축 4: 시장확장성
+// 축 3: 글로벌 성장 가능성
 // ─────────────────────────────────────────────
-export function scoreMarketScalability(
-  shopping: ShoppingItem[],
+const GLOBAL_SIGNAL = /글로벌|해외\s?진출|해외|수출|미국|일본|중국|유럽|동남아|베트남|대만|홍콩|싱가포르/;
+const GLOBAL_PLATFORM = /아마존|amazon|세포라|sephora|얼타|ulta|월마트|walmart|큐텐|qoo10|알리익스프레스|aliexpress|타오바오|라자다|lazada|쇼피|shopee/i;
+
+export function scoreGlobalGrowth(
   news: NewsItem[],
-  blog: NewsItem[],
-  coupang?: CoupangData | null
+  blog: NewsItem[]
 ): BrandAxisScore {
   const sub: { label: string; value: string }[] = [];
+  const allText = [...news, ...blog];
 
-  // 판매 채널 다각화 (최대 40점)
-  const uniqueMalls = new Set(shopping.map((s) => s.mall)).size;
-  const channelScore = uniqueMalls >= 6 ? 40 : uniqueMalls >= 4 ? 30 : uniqueMalls >= 2 ? 20 : uniqueMalls === 1 ? 12 : 5;
-  sub.push({ label: "판매 채널 수", value: `${uniqueMalls}개` });
+  const signalHits = allText.filter((n) => GLOBAL_SIGNAL.test(`${n.title} ${n.desc}`));
+  const platformHits = allText.filter((n) => GLOBAL_PLATFORM.test(`${n.title} ${n.desc}`));
 
-  // 카테고리 다양성 (최대 30점)
-  const uniqueCats = new Set(shopping.map((s) => s.category).filter(Boolean)).size;
-  const catScore = uniqueCats >= 4 ? 30 : uniqueCats >= 2 ? 20 : uniqueCats === 1 ? 12 : 5;
-  sub.push({ label: "제품 카테고리", value: `${uniqueCats || "미확인"}개` });
+  let score: number;
+  if (allText.length === 0) score = 20;
+  else if (signalHits.length === 0) score = 25;
+  else if (signalHits.length <= 2) score = 40;
+  else if (signalHits.length <= 4) score = 52;
+  else if (signalHits.length <= 7) score = 65;
+  else if (signalHits.length <= 12) score = 78;
+  else score = 90;
 
-  // 글로벌 진출 신호 (최대 20점)
-  const globalKeywords = /아마존|글로벌|해외|미국|일본|중국|유럽|수출|sephora|ulta|walmart/i;
-  const allText = [...news, ...blog].map((n) => `${n.title} ${n.desc}`).join(" ");
-  const hasGlobal = globalKeywords.test(allText);
-  const globalScore = hasGlobal ? 20 : 0;
-  if (hasGlobal) sub.push({ label: "글로벌 진출", value: "언급 있음" });
+  sub.push({ label: "글로벌 언급 기사", value: `${signalHits.length}건` });
 
-  // 가격 프리미엄 (최대 10점)
-  const avgPrice = shopping.length > 0
-    ? shopping.reduce((s, i) => s + i.price, 0) / shopping.length
-    : 0;
-  const premiumScore = avgPrice > 80_000 ? 10 : avgPrice > 40_000 ? 7 : avgPrice > 15_000 ? 4 : 0;
-  if (avgPrice > 0) sub.push({ label: "평균 판매가", value: `${Math.round(avgPrice / 1000)}천원` });
-
-  // 쿠팡 로켓배송 = 대형 플랫폼 진입 확인 (최대 +10)
-  let coupangBonus = 0;
-  if (coupang) {
-    coupangBonus = coupang.rocketDeliveryCount > 0 ? 10 : coupang.productCount > 0 ? 5 : 0;
-    if (coupang.rocketDeliveryCount > 0) sub.push({ label: "쿠팡 로켓배송", value: `${coupang.rocketDeliveryCount}개` });
+  if (platformHits.length > 0) {
+    score += 10;
+    const platforms = new Set<string>();
+    for (const n of platformHits) {
+      const m = `${n.title} ${n.desc}`.match(GLOBAL_PLATFORM);
+      if (m) platforms.add(m[0]);
+    }
+    sub.push({ label: "글로벌 플랫폼 노출", value: [...platforms].slice(0, 3).join(", ") });
   }
 
-  const score = channelScore + catScore + globalScore + premiumScore + coupangBonus;
-  const confidence: BrandAxisScore["confidence"] = shopping.length > 0 || coupang ? "estimated" : "unknown";
+  const confidence: BrandAxisScore["confidence"] = allText.length > 0 ? "estimated" : "unknown";
+  const detail =
+    signalHits.length > 0
+      ? `글로벌 관련 기사 ${signalHits.length}건${platformHits.length > 0 ? " · 해외 플랫폼 노출 확인" : ""}`
+      : allText.length > 0
+      ? "글로벌 진출 신호 없음"
+      : "뉴스·블로그 데이터 없음";
 
-  return {
-    score: clamp(score),
-    label: "시장확장성",
-    emoji: "🌏",
-    detail: `채널 ${uniqueMalls}개 · 카테고리 ${uniqueCats}개${hasGlobal ? " · 글로벌" : ""}${coupang?.rocketDeliveryCount ? " · 쿠팡로켓" : ""}`,
-    confidence,
-    subScores: sub,
-  };
-}
-
-// ─────────────────────────────────────────────
-// 축 5: 투자매력도
-// ─────────────────────────────────────────────
-export function scoreInvestmentAttractiveness(
-  investment: InvestmentInfo | null,
-  news: NewsItem[]
-): BrandAxisScore {
-  const sub: { label: string; value: string }[] = [];
-
-  if (!investment || investment.dealCount === 0) {
-    // 투자 이력 없어도 성장 뉴스로 보정
-    const growthSignals = news.filter((n) =>
-      /투자|펀딩|성장|확대|매출|수출|시리즈/.test(`${n.title} ${n.desc}`)
-    ).length;
-    const score = clamp(15 + growthSignals * 3, 10, 40);
-    return {
-      score,
-      label: "투자매력도",
-      emoji: "🎯",
-      detail: "투자 이력 없음 — 성장 신호 기반 추정",
-      confidence: "unknown",
-      subScores: [{ label: "성장 신호 뉴스", value: `${growthSignals}건` }],
-    };
-  }
-
-  // 투자 단계 기준 점수
-  const STAGE_SCORE: Record<string, number> = {
-    "시드": 32, "프리 시리즈A": 44, "시리즈 A": 56,
-    "시리즈 B": 66, "시리즈 C": 74, "시리즈 D": 80,
-    "IPO/상장": 85,
-  };
-  const stageScore = investment.stage ? (STAGE_SCORE[investment.stage] ?? 35) : 25;
-  if (investment.stage) sub.push({ label: "투자 단계", value: investment.stage });
-
-  // 누적 투자금액 보정
-  let amountBonus = 0;
-  const amt = investment.totalAmount ?? 0;
-  if (amt > 5e10) amountBonus = 20;        // 500억+
-  else if (amt > 1e10) amountBonus = 13;   // 100억+
-  else if (amt > 5e9) amountBonus = 8;     // 50억+
-  else if (amt > 1e9) amountBonus = 4;     // 10억+
-
-  if (amt > 0) {
-    const fmtAmt = amt >= 1e12 ? `${(amt / 1e12).toFixed(1)}조` : `${Math.round(amt / 1e8)}억`;
-    sub.push({ label: "누적 투자유치", value: fmtAmt });
-  }
-
-  // 투자 건수 보정 (활발한 투자 = 검증된 기업)
-  const dealBonus = Math.min(investment.dealCount * 2, 8);
-  sub.push({ label: "투자 건수", value: `${investment.dealCount}건` });
-
-  // 최근성 보정 — 가장 최근 기사 날짜 기준
-  let recencyBonus = 0;
-  if (investment.evidence.length > 0) {
-    const dates = investment.evidence
-      .map((e) => e.date ? new Date(e.date).getFullYear() : 0)
-      .filter(Boolean);
-    const latestYear = dates.length > 0 ? Math.max(...dates) : 0;
-    if (latestYear >= 2024) recencyBonus = 10;
-    else if (latestYear >= 2022) recencyBonus = 5;
-    if (latestYear > 0) sub.push({ label: "최근 투자", value: `${latestYear}년` });
-  }
-
-  const score = stageScore + amountBonus + dealBonus + recencyBonus;
-
-  return {
-    score: clamp(score),
-    label: "투자매력도",
-    emoji: "🎯",
-    detail: investment.stage ? `${investment.stage} 단계 · ${investment.dealCount}건` : `투자 ${investment.dealCount}건`,
-    confidence: "estimated",
-    subScores: sub,
-  };
+  return { score: clamp(score), label: "글로벌 성장 가능성", emoji: "🌏", detail, confidence, subScores: sub };
 }
 
 // ─────────────────────────────────────────────
@@ -380,21 +305,19 @@ export function computeBrandScore(params: {
   news: NewsItem[];
   blog: NewsItem[];
   shopping: ShoppingItem[];
-  investment: InvestmentInfo | null;
   trendScore?: number | null;
   oliveYoung?: OliveYoungData | null;
   coupang?: CoupangData | null;
 }): BrandScoreResult {
-  const { financials, news, blog, shopping, investment, trendScore, oliveYoung, coupang } = params;
+  const { financials, news, blog, shopping, trendScore, oliveYoung, coupang } = params;
 
-  const growthAxis   = scoreGrowth(financials, news, trendScore);
-  const profitAxis   = scoreProfitability(financials);
-  const brandAxis    = scoreBrandPower(shopping, news, blog, trendScore, oliveYoung, coupang);
-  const marketAxis   = scoreMarketScalability(shopping, news, blog, coupang);
-  const investAxis   = scoreInvestmentAttractiveness(investment, news);
+  const growthAxis = scoreGrowth(financials, news, trendScore);
+  const profitAxis = scoreProfitability(financials);
+  const globalAxis = scoreGlobalGrowth(news, blog);
+  const brandAxis  = scoreBrandPower(shopping, news, blog, trendScore, oliveYoung, coupang);
 
-  const axes = [growthAxis, profitAxis, brandAxis, marketAxis, investAxis] as BrandScoreResult["axes"];
-  const overall = Math.round(axes.reduce((s, a) => s + a.score, 0) / 5);
+  const axes = [growthAxis, profitAxis, globalAxis, brandAxis] as BrandScoreResult["axes"];
+  const overall = Math.round(axes.reduce((s, a) => s + a.score, 0) / 4);
   const g = grade(overall);
 
   // 규칙 기반 요약
