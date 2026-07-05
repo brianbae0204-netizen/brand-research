@@ -53,7 +53,10 @@ export async function loadCorpCodes(force = false): Promise<DartCorp[]> {
     }))
     .filter((c: DartCorp) => c.corp_name);
 
-  await fs.writeFile(CORP_FILE, JSON.stringify(codes), "utf-8");
+  // Vercel 등 읽기 전용 파일시스템에서는 저장이 실패할 수 있으므로 무시(메모리 캐시로 충분)
+  try {
+    await fs.writeFile(CORP_FILE, JSON.stringify(codes), "utf-8");
+  } catch {}
   MEMO = codes;
   return codes;
 }

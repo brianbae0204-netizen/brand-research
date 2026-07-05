@@ -5,6 +5,7 @@ out/
 .env*.local
 *.log
 .DS_Store
-cache/
+cache/*
+!cache/corp_codes.json
 .claude/
 tsconfig.tsbuildinfo
