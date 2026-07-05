@@ -5,6 +5,7 @@ import type { FinancialSummaryRow } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 60; // Vercel 함수 실행 제한(초) — 외부 API 수집이 길어질 수 있어 상향
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);

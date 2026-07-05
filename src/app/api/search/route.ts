@@ -6,6 +6,7 @@ import type { ResearchPurpose, SearchResult } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 60; // Vercel 함수 실행 제한(초) — 외부 API 수집이 길어질 수 있어 상향
 
 /**
  * 검색 1단계 — DART 등록 회사 후보 반환.

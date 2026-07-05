@@ -22,6 +22,7 @@ import type {
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 60; // Vercel 함수 실행 제한(초) — 외부 API 수집이 길어질 수 있어 상향
 
 function latestRevenue(summary: FinancialSummaryRow[]) {
   if (!summary.length) return { value: null as number | null, year: null as number | null };

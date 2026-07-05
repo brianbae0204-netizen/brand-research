@@ -10,6 +10,7 @@ import type {
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 60; // Vercel 함수 실행 제한(초) — 외부 API 수집이 길어질 수 있어 상향
 
 const NO_INFO = "정보 없음 / 실사 필요";
 
